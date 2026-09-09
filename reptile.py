@@ -1,4 +1,6 @@
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 import random
 import re
@@ -7,16 +9,13 @@ import os
 import sys
 from pathlib import Path
 
-# 伪装浏览器请求头（建议不要硬编码 Cookie，长期可能失效）
+# 伪装浏览器请求头
 headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.115 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
     "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     "Connection": "keep-alive",
     "Accept-Encoding": "gzip, deflate",
-    "Host": "www.baidu.com",
-    # 注意：Cookie 会过期，建议后期改为自动登录或去 Cookie
-    "Cookie": "BIDUPSID=203BB116BAD7A21452D9A8AFCF9C36F2; PSTM=1665389661; BD_UPN=123253; BDUSS=lpQTF1OFlKZmpJZEZmQ3pHdkpqMnhzRElNUk1kU35VWFFuaEpsUVpaZWtpR3hqRVFBQUFBJCQAAAAAAAAAAAEAAABNtRgKc29sb19tc2sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKT7RGOk-0Rjfm; BDUSS_BFESS=lpQTF1OFlKZmpJZEZmQ3pHdkpqMnhzRElNUk1kU35VWFFuaEpsUVpaZWtpR3hqRVFBQUFBJCQAAAAAAAAAAAEAAABNtRgKc29sb19tc2sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKT7RGOk-0Rjfm; BAIDUID=1088EDF2D03D0FA6EC2D052921641828:FG=1; MCITY=-:; BDORZ=B490B5EBF6F3CD402E515D22BCDA1598; BA_HECTOR=002la48g8l0k258g8185087v1hnjr451f; ZFY=R:BX3g8nr3kFWuFJs0zZHFQAmnd8jgw:BJUmyeTbQuQHU:C; BAIDUID_BFESS=1088EDF2D03D0FA6EC2D052921641828:FG=1; BD_HOME=1; sugstore=0; BDRCVFR[feWj1Vr5u3D]=I67x6TjHwwYf0; BD_CK_SAM=1; PSINO=2; delPer=0; baikeVisitId=f3893191-471e-4462-a8dc-d1569ec1182d; H_PS_PSSID=36548_37557_37513_37684_37768_37778_37797_37539_37714_37741_26350_37789; H_PS_645EC=f126ZpPGPo4WkGeVRredI8zb2MdUoY1SWbcuKHKZLJ9PNN0gGSrKV4sXAlv3yU9gf7Sa; BDSVRTM=199; WWW_ST=1668936275987"
 }
 
 
@@ -30,9 +29,14 @@ def resource_path(relative_path):
 
 
 def get_user_data_dir():
-    """ 获取用户数据目录，用于保存可修改文件 """
+    """ 获取用户数据目录，用于保存可修改文件（跨平台兼容） """
     app_name = "MessageBombingTool"
-    user_dir = Path(os.getenv('LOCALAPPDATA')) / app_name
+    if os.name == 'nt':
+        user_dir = Path(os.getenv('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')) / app_name
+    elif sys.platform == 'darwin':
+        user_dir = Path.home() / 'Library' / 'Application Support' / app_name
+    else:
+        user_dir = Path.home() / '.local' / 'share' / app_name
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
@@ -68,6 +72,21 @@ except Exception as e:
     needs = []
 
 
+def create_session():
+    """创建带重试机制的 requests Session"""
+    session = requests.Session()
+    session.headers.update(headers)
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 def baidu_search(v_keyword, v_max_page, output_file):
     """
     爬取百度搜索结果并追加写入文件
@@ -76,23 +95,37 @@ def baidu_search(v_keyword, v_max_page, output_file):
     :param output_file: 输出文件路径（Path 对象）
     :return: None
     """
+    session = create_session()
+    seen_links = set()
+
+    # 先访问百度首页获取初始 Cookie
+    try:
+        session.get("https://www.baidu.com/", timeout=10)
+    except requests.RequestException:
+        pass
+
     for page in range(v_max_page):
         print(f'开始爬取第 {page + 1} 页')
-        wait_seconds = random.uniform(1, 2)
+        wait_seconds = random.uniform(2, 4)
         print(f'等待 {wait_seconds:.2f} 秒')
         time.sleep(wait_seconds)
 
         url = f'https://www.baidu.com/s?wd={v_keyword}&pn={page * 10}'
         try:
-            r = requests.get(url, headers=headers, timeout=10)
+            r = session.get(url, timeout=15)
             r.raise_for_status()
             html = r.text
 
-            # 提取 ada.baidu.com/site/ 开头的链接
-            # 注意：正则需根据实际 HTML 调整，当前正则可能不准确
-            links = re.findall(r'https://ada\.baidu\.com/site/[^\s"<>]+', html)
+            # 提取 ada.baidu.com/site/ 开头的链接（兼容多种 URL 格式）
+            links = re.findall(r'https?://ada\.baidu\.com/site/[^\s"\'<>]+', html)
             valid_links = []
             for link in links:
+                # 去除尾部可能的 HTML 实体或多余字符
+                link = link.rstrip('&amp;').rstrip(';')
+                # 去重
+                if link in seen_links:
+                    continue
+                seen_links.add(link)
                 # 过滤 xyl.imid 开头的
                 path_parts = link.split('/')
                 if len(path_parts) >= 6 and not path_parts[5].startswith('xyl'):
@@ -104,10 +137,14 @@ def baidu_search(v_keyword, v_max_page, output_file):
                     print(link)
                     f.write(link.strip() + '\n')
 
+            print(f'第 {page + 1} 页获取到 {len(valid_links)} 个新链接')
+
         except requests.RequestException as e:
             print(f"请求失败: {e}")
         except Exception as e:
             traceback.print_exc()
+
+    session.close()
 
 
 def star_get_putian_url(stop_event=None, output_file=None):

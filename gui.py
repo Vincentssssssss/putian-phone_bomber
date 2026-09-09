@@ -26,9 +26,14 @@ def resource_path(relative_path):
 
 
 def get_user_data_dir():
-    """ 获取用户数据目录，用于保存可修改文件 """
-    app_name = "MessageBombingTool"  # 自定义应用名
-    user_dir = Path(os.getenv('LOCALAPPDATA')) / app_name
+    """ 获取用户数据目录，用于保存可修改文件（跨平台兼容） """
+    app_name = "MessageBombingTool"
+    if os.name == 'nt':
+        user_dir = Path(os.getenv('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')) / app_name
+    elif sys.platform == 'darwin':
+        user_dir = Path.home() / 'Library' / 'Application Support' / app_name
+    else:
+        user_dir = Path.home() / '.local' / 'share' / app_name
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
