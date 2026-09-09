@@ -2,6 +2,7 @@
 
 import time
 import random
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -54,6 +55,51 @@ def get_user_file_path(filename):
         else:
             raise FileNotFoundError(f"❌ 默认配置文件未找到: {filename}")
     return user_file
+
+
+def load_selectors():
+    """
+    从 selectors.json 加载 CSS 选择器配置
+    优先读取用户目录，其次读取项目目录
+    """
+    # 查找顺序：用户目录 > 项目目录
+    search_paths = [
+        get_user_data_dir() / 'selectors.json',
+        resource_path('selectors.json'),
+    ]
+
+    for path in search_paths:
+        if path.exists():
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                logger.info(f"✅ 已加载选择器配置: {path}")
+                return config
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error(f"❌ 选择器配置文件损坏: {path}, {e}")
+
+    # 如果都没找到，使用默认值（向后兼容）
+    logger.warning("⚠️ 未找到 selectors.json，使用默认选择器")
+    return {
+        "input_box": {"by": "CLASS_NAME", "value": "pc-imlp-component-typebox-input"},
+        "send_button": {"by": "CLASS_NAME", "value": "pc-imlp-component-typebox-send"},
+        "wait_timeout_seconds": 10
+    }
+
+
+def get_by_enum(by_str):
+    """将字符串转换为 Selenium By 枚举"""
+    by_map = {
+        "CLASS_NAME": By.CLASS_NAME,
+        "CSS_SELECTOR": By.CSS_SELECTOR,
+        "ID": By.ID,
+        "NAME": By.NAME,
+        "XPATH": By.XPATH,
+        "TAG_NAME": By.TAG_NAME,
+        "LINK_TEXT": By.LINK_TEXT,
+        "PARTIAL_LINK_TEXT": By.PARTIAL_LINK_TEXT,
+    }
+    return by_map.get(by_str.upper(), By.CLASS_NAME)
 
 
 def load_urls_from_file(custom_path=None):
@@ -155,19 +201,24 @@ def create_driver(chrome_path=None):
     return webdriver.Chrome(options=options)
 
 
-def visit_website(chrome_path, phone, url, need_cheat):
+def visit_website(chrome_path, phone, url, need_cheat, selectors=None):
     """
     单个访问任务
     :param chrome_path: Chrome可执行文件路径
     :param phone: 手机号
     :param url: 目标URL
     :param need_cheat: 前缀列表
+    :param selectors: 选择器配置（可选，默认从 selectors.json 加载）
     :return: 是否成功
     """
+    if selectors is None:
+        selectors = load_selectors()
+
     driver = None
     try:
         driver = create_driver(chrome_path)
-        wait = WebDriverWait(driver, 10)
+        timeout = selectors.get('wait_timeout_seconds', 10)
+        wait = WebDriverWait(driver, timeout)
 
         # 先访问百度（防止某些网站拦截）
         driver.get("https://www.baidu.com/")
@@ -183,12 +234,20 @@ def visit_website(chrome_path, phone, url, need_cheat):
         prefix = random.choice(need_cheat)
         message = prefix + phone
 
+        # 从配置读取选择器
+        input_cfg = selectors['input_box']
+        send_cfg = selectors['send_button']
+
         # 输入并发送
-        input_box = wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'pc-imlp-component-typebox-input')))
+        input_box = wait.until(EC.presence_of_element_located(
+            (get_by_enum(input_cfg['by']), input_cfg['value'])
+        ))
         input_box.clear()
         input_box.send_keys(message)
 
-        send_btn = wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'pc-imlp-component-typebox-send')))
+        send_btn = wait.until(EC.element_to_be_clickable(
+            (get_by_enum(send_cfg['by']), send_cfg['value'])
+        ))
         send_btn.click()
 
         time.sleep(1)  # 可视化延迟
@@ -205,6 +264,131 @@ def visit_website(chrome_path, phone, url, need_cheat):
                 driver.quit()
             except:
                 pass  # 忽略关闭异常
+
+
+def diagnose(url, chrome_path=None):
+    """
+    诊断模式：访问目标 URL，分析页面 DOM 结构，
+    帮助找到正确的输入框和发送按钮选择器。
+    :param url: 目标医院 ADA 页面 URL
+    :param chrome_path: Chrome 路径（可选）
+    """
+    print(f"\n🔍 诊断模式启动，正在访问: {url}")
+    print("=" * 60)
+
+    driver = None
+    try:
+        driver = create_driver(chrome_path)
+        driver.get("https://www.baidu.com/")
+        time.sleep(0.5)
+        driver.get(url)
+
+        # 等待页面加载
+        time.sleep(5)
+
+        # 切换窗口
+        handles = driver.window_handles
+        if len(handles) > 1:
+            driver.switch_to.window(handles[-1])
+            print(f"📌 已切换到最新窗口 (共 {len(handles)} 个)")
+
+        time.sleep(3)  # 等待聊天组件加载
+
+        print("\n📋 页面中的所有 input/textarea 元素:")
+        print("-" * 60)
+        inputs = driver.find_elements(By.TAG_NAME, 'input')
+        textareas = driver.find_elements(By.TAG_NAME, 'textarea')
+        all_fields = inputs + textareas
+
+        if not all_fields:
+            print("  ❌ 未找到任何 input/textarea 元素")
+            print("  💡 可能原因：页面未完全加载 / 聊天组件在 iframe 中")
+        else:
+            for i, elem in enumerate(all_fields):
+                tag = elem.tag_name
+                cls = elem.get_attribute('class') or '(无)'
+                elem_id = elem.get_attribute('id') or '(无)'
+                name = elem.get_attribute('name') or '(无)'
+                placeholder = elem.get_attribute('placeholder') or '(无)'
+                visible = elem.is_displayed()
+                print(f"  [{i}] <{tag}>")
+                print(f"      class: {cls}")
+                print(f"      id: {elem_id}")
+                print(f"      name: {name}")
+                print(f"      placeholder: {placeholder}")
+                print(f"      可见: {visible}")
+                print()
+
+        print("\n📋 页面中所有 button 元素:")
+        print("-" * 60)
+        buttons = driver.find_elements(By.TAG_NAME, 'button')
+        # 也找 div/span 带 role="button" 的
+        role_buttons = driver.find_elements(By.CSS_SELECTOR, '[role="button"]')
+        # 找包含"发送"文字的任意元素
+        send_elements = driver.find_elements(By.XPATH, '//*[contains(text(), "发送")]')
+
+        all_btns = buttons + role_buttons + send_elements
+        seen = set()
+        for i, elem in enumerate(all_btns):
+            elem_id = id(elem)
+            if elem_id in seen:
+                continue
+            seen.add(elem_id)
+            tag = elem.tag_name
+            cls = elem.get_attribute('class') or '(无)'
+            text = (elem.text or '').strip()[:50]
+            elem_id_attr = elem.get_attribute('id') or '(无)'
+            visible = elem.is_displayed()
+            print(f"  [{i}] <{tag}>")
+            print(f"      class: {cls}")
+            print(f"      id: {elem_id_attr}")
+            print(f"      text: {text}")
+            print(f"      可见: {visible}")
+            print()
+
+        if not all_btns:
+            print("  ❌ 未找到任何 button 元素")
+
+        # 检查 iframe
+        iframes = driver.find_elements(By.TAG_NAME, 'iframe')
+        if iframes:
+            print(f"\n⚠️ 页面包含 {len(iframes)} 个 iframe，聊天组件可能在 iframe 中")
+            print("  💡 如果是这样，需要切换到 iframe 后再查找元素")
+
+        # 当前选择器测试
+        print("\n🧪 测试当前 selectors.json 中的选择器:")
+        print("-" * 60)
+        selectors = load_selectors()
+        input_cfg = selectors['input_box']
+        send_cfg = selectors['send_button']
+
+        try:
+            elem = driver.find_element(get_by_enum(input_cfg['by']), input_cfg['value'])
+            print(f"  ✅ 输入框 [{input_cfg['by']}={input_cfg['value']}] → 找到！")
+        except Exception:
+            print(f"  ❌ 输入框 [{input_cfg['by']}={input_cfg['value']}] → 未找到")
+
+        try:
+            elem = driver.find_element(get_by_enum(send_cfg['by']), send_cfg['value'])
+            print(f"  ✅ 发送按钮 [{send_cfg['by']}={send_cfg['value']}] → 找到！")
+        except Exception:
+            print(f"  ❌ 发送按钮 [{send_cfg['by']}={send_cfg['value']}] → 未找到")
+
+        print("\n" + "=" * 60)
+        print("💡 如果选择器失效，请从上面的列表中找到正确的 class/id")
+        print("   然后更新 selectors.json 文件中的 value 字段")
+        print("=" * 60)
+
+    except Exception as e:
+        print(f"\n❌ 诊断失败: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
 
 
 def boom(chrome_path, phone, max_workers=5, url_file=None, cheat_file=None):
@@ -250,3 +434,17 @@ def boom(chrome_path, phone, max_workers=5, url_file=None, cheat_file=None):
     except Exception as e:
         logger.error(f"💣 任务中断: {e}")
         return False
+
+
+if __name__ == '__main__':
+    # 诊断模式: python main.py --diagnose <url> [chrome_path]
+    if len(sys.argv) >= 3 and sys.argv[1] == '--diagnose':
+        target_url = sys.argv[2]
+        chrome = sys.argv[3] if len(sys.argv) > 3 else None
+        diagnose(target_url, chrome)
+    else:
+        print("用法:")
+        print("  诊断模式:  python main.py --diagnose <url> [chrome_path]")
+        print("  示例:      python main.py --diagnose https://ada.baidu.com/site/xxx")
+        print()
+        print("  通过 GUI 启动: python gui.py")

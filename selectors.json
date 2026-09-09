@@ -1,0 +1,17 @@
+{
+    "_comment": "百度 ADA 聊天窗口的 CSS 选择器配置。如果百度改版导致发送失败，请用诊断模式（python main.py --diagnose <url>）检测新的 class 名，然后更新下面的值。",
+
+    "input_box": {
+        "by": "CLASS_NAME",
+        "value": "pc-imlp-component-typebox-input",
+        "description": "聊天输入框"
+    },
+
+    "send_button": {
+        "by": "CLASS_NAME",
+        "value": "pc-imlp-component-typebox-send",
+        "description": "发送按钮"
+    },
+
+    "wait_timeout_seconds": 10
+}
