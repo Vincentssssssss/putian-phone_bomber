@@ -96,8 +96,52 @@ def load_needCheat_from_file(custom_path=None):
     return needs
 
 
-def create_driver(chrome_path):
+def find_chrome_path():
+    """
+    自动检测 Chrome 浏览器路径（跨平台）
+    :return: Chrome 路径，未找到返回 None
+    """
+    import glob
+    candidates = []
+    if os.name == 'nt':
+        # Windows
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            str(Path(os.getenv('LOCALAPPDATA', '')) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'),
+        ]
+    elif sys.platform == 'darwin':
+        # macOS
+        candidates = [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            str(Path.home() / 'Applications' / 'Google Chrome.app' / 'Contents' / 'MacOS' / 'Google Chrome'),
+        ]
+    else:
+        # Linux
+        candidates = [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/chromium',
+            '/snap/bin/chromium',
+        ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def create_driver(chrome_path=None):
     """创建带配置的Chrome浏览器实例"""
+    if not chrome_path:
+        chrome_path = find_chrome_path()
+    if not chrome_path:
+        raise FileNotFoundError(
+            "❌ 未找到 Chrome 浏览器，请手动指定路径。\n"
+            "  macOS: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n"
+            "  Windows: C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\n"
+            "  Linux: /usr/bin/google-chrome"
+        )
     options = Options()
     options.binary_location = chrome_path
     options.add_argument("--disable-gpu")

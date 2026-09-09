@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 # 假设 main.py 提供这些函数
-from main import boom, load_urls_from_file, load_needCheat_from_file
+from main import boom, load_urls_from_file, load_needCheat_from_file, find_chrome_path
 import reptile
 
 
@@ -58,6 +58,10 @@ class BoomGUI:
         self.root.resizable(False, False)
 
         self.chrome_path = tk.StringVar()
+        # 自动检测 Chrome 路径
+        detected_chrome = find_chrome_path()
+        if detected_chrome:
+            self.chrome_path.set(detected_chrome)
         self.phone = tk.StringVar()
         self.max_workers = tk.IntVar(value=5)
 
@@ -119,8 +123,14 @@ class BoomGUI:
     def select_chrome(self):
         if os.name == 'nt':
             filetypes = [("Chrome", "chrome.exe"), ("所有文件", "*")]
+        elif sys.platform == 'darwin':
+            filetypes = [
+                ("Google Chrome", "Google Chrome"),
+                ("应用程序", ("*.app", "*")),
+                ("所有文件", "*")
+            ]
         else:
-            filetypes = [("所有文件", "*")]
+            filetypes = [("Chrome", "google-chrome*"), ("所有文件", "*")]
         path = filedialog.askopenfilename(title="选择 Chrome", filetypes=filetypes)
         if path:
             self.chrome_path.set(path)
@@ -188,12 +198,18 @@ class BoomGUI:
             self.root.after(0, lambda: messagebox.showerror("错误", f"还原失败: {e}"))
 
     def start_task(self):
-        chrome = self.chrome_path.get()
+        chrome = self.chrome_path.get().strip()
         phone = self.phone.get().strip()
         workers = self.max_workers.get()
 
+        # 如果未指定 Chrome 路径，尝试自动检测
+        if not chrome:
+            chrome = find_chrome_path()
+            if chrome:
+                self.chrome_path.set(chrome)
+
         if not chrome or not os.path.exists(chrome):
-            messagebox.showwarning("警告", "请正确选择 Chrome 路径！")
+            messagebox.showwarning("警告", "请正确选择 Chrome 路径！\n可点击“选择...”按钮手动指定。")
             return
         if not phone:
             messagebox.showwarning("警告", "请输入手机号！")
